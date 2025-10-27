@@ -1,0 +1,3 @@
+Upstream: odoo/odoo@041c70150ee50ef58c02dbcec157adb646cfcde5
+Date: 2025-10-27T04:34:55Z
+Title: [FIX] l10n_es_edi_verifactu: removed unnecessary chatter
