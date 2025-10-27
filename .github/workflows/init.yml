@@ -1,0 +1,94 @@
+name: 初始化 Odoo 19.0 镜像分支
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 克隆上游 Odoo 仓库（19.0 分支）
+        run: |
+          git clone \
+            --filter=blob:none \
+            --depth=1 \
+            --branch 19.0 \
+            --single-branch \
+            --no-tags \
+            https://github.com/odoo/odoo.git \
+            upstream
+          cd upstream
+          echo "UPSTREAM_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "UPSTREAM_DATE=$(git log -1 --format=%cI)" >> $GITHUB_ENV
+          echo "UPSTREAM_TITLE=$(git log -1 --format=%s)" >> $GITHUB_ENV
+
+      - name: 删除上游 .github 目录
+        run: |
+          cd upstream
+          rm -rf .github
+
+      - name: 清理非中文翻译文件
+        run: |
+          cd upstream
+          # 删除所有 .po 文件，但保留 zh_CN.po
+          find . -type f -name "*.po" ! -name "zh_CN.po" -delete
+          # 保留所有 .pot 文件（不删除）
+          echo "翻译文件清理完成"
+
+      - name: 初始化新仓库并创建孤儿分支
+        run: |
+          cd upstream
+          
+          # 移除上游的 git 历史
+          rm -rf .git
+          
+          # 初始化新的 git 仓库
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 添加所有文件
+          git add .
+          
+          # 创建初始提交
+          UPSTREAM_SHA="${{ env.UPSTREAM_SHA }}"
+          UPSTREAM_DATE="${{ env.UPSTREAM_DATE }}"
+          UPSTREAM_TITLE="${{ env.UPSTREAM_TITLE }}"
+          
+          git commit -m "初始化 Odoo 19.0 中文精简镜像
+
+          从上游仓库同步并清理非中文翻译文件。
+
+          Upstream-Repository: https://github.com/odoo/odoo
+          Upstream-Branch: 19.0
+          Upstream-Commit: ${UPSTREAM_SHA}
+          Upstream-Date: ${UPSTREAM_DATE}
+          Upstream-Title: ${UPSTREAM_TITLE}
+          Upstream-Compare: https://github.com/odoo/odoo/compare/${UPSTREAM_SHA}...19.0"
+          
+          # 添加 git notes（可选）
+          git notes add -m "Upstream: odoo/odoo@${UPSTREAM_SHA}
+          Date: ${UPSTREAM_DATE}
+          Title: ${UPSTREAM_TITLE}"
+
+      - name: 推送到 19.0 分支
+        run: |
+          cd upstream
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git branch -M 19.0
+          git push -f origin 19.0
+          
+          # 推送 notes（可选）
+          git push origin refs/notes/commits || true
+
+      - name: 完成通知
+        run: |
+          echo "✅ Odoo 19.0 镜像分支初始化完成！"
+          echo "📌 上游 Commit: ${{ env.UPSTREAM_SHA }}"
+          echo "📅 上游日期: ${{ env.UPSTREAM_DATE }}"
+          echo "📝 提交标题: ${{ env.UPSTREAM_TITLE }}"
+
+

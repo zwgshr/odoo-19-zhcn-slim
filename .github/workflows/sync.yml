@@ -1,0 +1,183 @@
+name: 同步 Odoo 19.0 上游更新
+
+on:
+  schedule:
+    # 每天 UTC 00:00 运行
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出当前仓库的 19.0 分支
+        uses: actions/checkout@v4
+        with:
+          ref: 19.0
+          fetch-depth: 1
+
+      - name: 读取上次同步的 commit SHA
+        id: last_sync
+        run: |
+          # 从最新的 commit message 中提取上游 commit SHA
+          LAST_SHA=$(git log -1 --pretty=%B | grep -oP '(?<=Upstream-Commit: )[a-f0-9]+' || echo "")
+          if [ -n "${LAST_SHA}" ]; then
+            echo "last_sha=${LAST_SHA}" >> $GITHUB_OUTPUT
+            echo "📌 上次同步的 commit: ${LAST_SHA}"
+          else
+            echo "last_sha=" >> $GITHUB_OUTPUT
+            echo "⚠️ 未找到上次同步记录，将执行完整同步"
+          fi
+
+      - name: 克隆上游 Odoo 仓库（19.0 分支）
+        run: |
+          git clone \
+            --filter=blob:none \
+            --depth=1 \
+            --branch 19.0 \
+            --single-branch \
+            --no-tags \
+            https://github.com/odoo/odoo.git \
+            upstream
+          cd upstream
+          UPSTREAM_SHA=$(git rev-parse HEAD)
+          echo "UPSTREAM_SHA=${UPSTREAM_SHA}" >> $GITHUB_ENV
+          echo "📌 上游最新 commit: ${UPSTREAM_SHA}"
+
+      - name: 检查是否有更新
+        id: check_update
+        run: |
+          LAST_SHA="${{ steps.last_sync.outputs.last_sha }}"
+          UPSTREAM_SHA="${{ env.UPSTREAM_SHA }}"
+          
+          if [ -n "${LAST_SHA}" ] && [ "${LAST_SHA}" = "${UPSTREAM_SHA}" ]; then
+            echo "has_update=false" >> $GITHUB_OUTPUT
+            echo "✅ 上游无更新，跳过同步"
+          else
+            echo "has_update=true" >> $GITHUB_OUTPUT
+            echo "🆕 检测到上游更新，开始同步"
+          fi
+
+      - name: 提取上游元数据
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          cd upstream
+          UPSTREAM_SHA="${{ env.UPSTREAM_SHA }}"
+          UPSTREAM_DATE=$(git log -1 --format=%cI)
+          UPSTREAM_TITLE=$(git log -1 --format=%s)
+          UPSTREAM_AUTHOR=$(git log -1 --format=%an)
+          
+          echo "UPSTREAM_DATE=${UPSTREAM_DATE}" >> $GITHUB_ENV
+          echo "UPSTREAM_TITLE=${UPSTREAM_TITLE}" >> $GITHUB_ENV
+          echo "UPSTREAM_AUTHOR=${UPSTREAM_AUTHOR}" >> $GITHUB_ENV
+          
+          # 如果存在上次 SHA，生成对比链接
+          LAST_SHA="${{ steps.last_sync.outputs.last_sha }}"
+          if [ -n "${LAST_SHA}" ]; then
+            COMPARE_URL="https://github.com/odoo/odoo/compare/${LAST_SHA}...${UPSTREAM_SHA}"
+          else
+            COMPARE_URL="https://github.com/odoo/odoo/commits/${UPSTREAM_SHA}"
+          fi
+          echo "COMPARE_URL=${COMPARE_URL}" >> $GITHUB_ENV
+
+      - name: 删除上游 .github 目录
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          cd upstream
+          rm -rf .github
+
+      - name: 清理非中文翻译文件
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          cd upstream
+          # 删除所有 .po 文件，但保留 zh_CN.po
+          find . -type f -name "*.po" ! -name "zh_CN.po" -delete
+          # 保留所有 .pot 文件（不删除）
+          echo "✅ 翻译文件清理完成"
+
+      - name: 同步更新到本地分支
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          # 配置 git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 删除当前分支的所有文件（保留 .git）
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          
+          # 复制上游处理后的文件
+          cp -r upstream/. .
+          
+          # 移除临时上游目录
+          rm -rf upstream
+
+      - name: 提交更改
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          git add .
+          
+          UPSTREAM_SHA="${{ env.UPSTREAM_SHA }}"
+          UPSTREAM_DATE="${{ env.UPSTREAM_DATE }}"
+          UPSTREAM_TITLE="${{ env.UPSTREAM_TITLE }}"
+          UPSTREAM_AUTHOR="${{ env.UPSTREAM_AUTHOR }}"
+          LAST_SHA="${{ steps.last_sync.outputs.last_sha }}"
+          COMPARE_URL="${{ env.COMPARE_URL }}"
+          
+          # 检查是否有变更
+          if git diff --staged --quiet; then
+            echo "⚠️ 没有文件变更，跳过提交"
+            echo "has_changes=false" >> $GITHUB_ENV
+          else
+            git commit -m "同步上游 Odoo 19.0 更新
+
+          同步来自 odoo/odoo 仓库 19.0 分支的最新更新。
+
+          Upstream-Repository: https://github.com/odoo/odoo
+          Upstream-Branch: 19.0
+          Upstream-Commit: ${UPSTREAM_SHA}
+          Upstream-Date: ${UPSTREAM_DATE}
+          Upstream-Author: ${UPSTREAM_AUTHOR}
+          Upstream-Title: ${UPSTREAM_TITLE}
+          Upstream-Previous: ${LAST_SHA:-N/A}
+          Upstream-Compare: ${COMPARE_URL}"
+            
+            # 添加 git notes（可选）
+            git notes add -m "Upstream: odoo/odoo@${UPSTREAM_SHA}
+          Date: ${UPSTREAM_DATE}
+          Author: ${UPSTREAM_AUTHOR}
+          Title: ${UPSTREAM_TITLE}
+          Compare: ${COMPARE_URL}" || true
+            
+            echo "has_changes=true" >> $GITHUB_ENV
+            echo "✅ 提交已创建"
+          fi
+
+      - name: 推送到 19.0 分支
+        if: steps.check_update.outputs.has_update == 'true' && env.has_changes == 'true'
+        run: |
+          git push origin 19.0
+          
+          # 推送 notes（可选）
+          git push origin refs/notes/commits || true
+          
+          echo "✅ 更新已推送到远程仓库"
+
+      - name: 完成通知
+        if: steps.check_update.outputs.has_update == 'true'
+        run: |
+          echo "✅ Odoo 19.0 同步完成！"
+          echo "📌 上游 Commit: ${{ env.UPSTREAM_SHA }}"
+          echo "📅 上游日期: ${{ env.UPSTREAM_DATE }}"
+          echo "👤 上游作者: ${{ env.UPSTREAM_AUTHOR }}"
+          echo "📝 提交标题: ${{ env.UPSTREAM_TITLE }}"
+          echo "🔗 对比链接: ${{ env.COMPARE_URL }}"
+
+      - name: 跳过通知
+        if: steps.check_update.outputs.has_update == 'false'
+        run: |
+          echo "ℹ️ 上游无更新，本次同步已跳过"
+
+
