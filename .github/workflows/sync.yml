@@ -16,7 +16,7 @@ jobs:
       - name: 检出当前仓库的 19.0 分支
         uses: actions/checkout@v4
         with:
-          ref: 19.0
+          ref: "19.0"
           fetch-depth: 1
 
       - name: 读取上次同步的 commit SHA
