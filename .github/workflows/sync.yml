@@ -162,10 +162,11 @@ jobs:
       - name: 推送到 19.0 分支
         if: steps.check_update.outputs.has_update == 'true' && env.has_changes == 'true'
         run: |
-          git push origin 19.0
+          # 使用 GITHUB_TOKEN 进行认证推送
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git 19.0
           
           # 推送 notes（可选）
-          git push origin refs/notes/commits || true
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git refs/notes/commits || true
           
           echo "✅ 更新已推送到远程仓库"
 
