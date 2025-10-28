@@ -105,8 +105,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 删除当前分支的所有文件（保留 .git）
-          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          # 删除当前分支的所有文件（保留 .git 和 upstream）
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name 'upstream' -exec rm -rf {} +
           
           # 复制上游处理后的文件
           cp -r upstream/. .
