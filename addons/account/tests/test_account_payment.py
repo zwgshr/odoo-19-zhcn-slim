@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
 from contextlib import contextmanager
 
 from odoo import Command, fields
+from odoo.exceptions import UserError
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
 from odoo.addons.mail.tests.common import MailCommon
 from odoo.tests import Form, tagged
@@ -37,11 +37,13 @@ class TestAccountPayment(AccountTestInvoicingCommon, MailCommon):
             'acc_number': "985632147",
             'partner_id': cls.env.company.partner_id.id,
             'acc_type': 'bank',
+            'allow_out_payment': True,
         })
         cls.comp_bank_account2 = cls.env['res.partner.bank'].create({
             'acc_number': "741258963",
             'partner_id': cls.env.company.partner_id.id,
             'acc_type': 'bank',
+            'allow_out_payment': True,
         })
 
         cls.pay_term_epd = cls.env['account.payment.term'].create([{
@@ -426,30 +428,6 @@ class TestAccountPayment(AccountTestInvoicingCommon, MailCommon):
         reversal_wizard.refund_moves()
         self.assertRecordValues(invoice, [{'payment_state': 'not_paid'}])
         self.assertRecordValues(payment.move_id.line_ids, [{'reconciled': True}] * 2)
-
-    def test_bill_state_change_on_payment_state(self):
-        """Test that bill payment state changes correctly when payment state transitions occur.
-        • Draft payment case: Bill state reverts to 'not_paid' when payment is drafted
-        • Payment unlink case: Bill state reverts to 'not_paid' when payment is deleted
-        """
-        bill = self.init_invoice('in_invoice', post=True, partner=self.partner_a, products=self.product_a)
-
-        # We have to test it without any Outstanding Payment account set in Journal
-        self.bank_journal_1.outbound_payment_method_line_ids.payment_account_id = False
-
-        payment = self.env['account.payment.register']\
-            .with_context(active_model='account.move', active_ids=bill.ids)\
-            .create({})\
-            ._create_payments()
-        self.assertEqual(bill.payment_state, self.env['account.move']._get_invoice_in_payment_state())
-
-        payment.action_draft()
-        self.assertEqual(payment.state, 'draft')
-        self.assertEqual(payment.invoice_ids.payment_state, 'not_paid')
-
-        payment.action_post()
-        payment.unlink()
-        self.assertEqual(bill.payment_state, 'not_paid')
 
     def test_payment_without_default_company_account(self):
         """ The purpose of this test is to check the specific behavior when duplicating an inbound payment, then change
@@ -922,10 +900,12 @@ class TestAccountPayment(AccountTestInvoicingCommon, MailCommon):
             (False, 'partial', 'partial'),
             (False, 'in_payment', 'in_payment'),
             (False, 'paid', 'paid'),
+            (False, 'blocked', 'blocked'),
             (True, 'partial', 'partial'),
             (True, 'in_payment', 'in_payment'),
             (True, 'paid', 'paid'),
             (True, 'reversed', 'reversed'),
+            (True, 'blocked', 'blocked'),
         ]:
             invoice = create_invoice(post=post, kwargs={'payment_state': payment_state})
             self.assertEqual(invoice.status_in_payment, expected)
@@ -936,3 +916,31 @@ class TestAccountPayment(AccountTestInvoicingCommon, MailCommon):
         ]:
             invoice = create_invoice(post=True, kwargs={'is_move_sent': is_move_sent})
             self.assertEqual(invoice.status_in_payment, expected)
+
+    def test_payment_move_with_multiple_liquidity_lines(self):
+        payment = self.env['account.payment'].create({
+            'amount': 150.0,
+            'payment_type': 'inbound',
+            'partner_type': 'customer',
+            'partner_id': self.partner_a.id,
+            'journal_id': self.company_data['default_journal_bank'].id,
+        })
+        payment.action_post()
+        move = payment.move_id
+        move.button_draft()
+        liquidity_lines = payment._seek_for_lines()[0]
+        move.write({
+            'line_ids': [
+                Command.update(liquidity_lines.id, {'amount_currency': 100}),
+                Command.create({
+                    'account_id': liquidity_lines.account_id.id,
+                    'balance': 50.0,
+                    'amount_currency': 50.0,
+                    'currency_id': payment.currency_id.id,
+                }),
+            ],
+        })
+        move.action_post()
+        payment.action_draft()
+        with self.assertRaises(UserError):
+            payment.amount = 300.0

@@ -14,6 +14,7 @@ from odoo.exceptions import UserError
 from odoo.fields import Domain, Command
 from odoo.tools import format_datetime, format_date, groupby, OrderedSet, SQL
 from odoo.tools.float_utils import float_compare, float_is_zero
+from odoo.tools.misc import clean_context
 
 
 class StockPickingType(models.Model):
@@ -769,7 +770,13 @@ class StockPicking(models.Model):
         all_moves._fields['forecast_availability'].compute_value(all_moves)
         for picking in pickings:
             # In case of draft the behavior of forecast_availability is different : if forecast_availability < 0 then there is a issue else not.
-            if any(move.product_id.uom_id.compare(move.forecast_availability, 0 if move.state == 'draft' else move.product_qty) == -1 for move in picking.move_ids):
+            if any(
+                move.product_id
+                and move.product_id.uom_id.compare(
+                    move.forecast_availability, 0 if move.state == 'draft' else move.product_qty
+                ) == -1
+                for move in picking.move_ids
+            ):
                 picking.products_availability = _('Not Available')
                 picking.products_availability_state = 'late'
             else:
@@ -882,22 +889,21 @@ class StockPicking(models.Model):
         for picking in self:
             picking.weight_bulk = picking_weights[picking.id]
 
-    @api.depends('move_line_ids.result_package_id', 'move_line_ids.result_package_id.shipping_weight', 'move_line_ids.result_package_id.outermost_package_id.shipping_weight', 'weight_bulk')
+    @api.depends(
+        'move_line_ids.result_package_id', 'move_line_ids.result_package_id.package_type_id', 'move_line_ids.result_package_id.shipping_weight',
+        'move_line_ids.result_package_id.outermost_package_id', 'move_line_ids.result_package_id.outermost_package_id.package_type_id', 'move_line_ids.result_package_id.outermost_package_id.shipping_weight',
+        'weight_bulk')
     def _compute_shipping_weight(self):
         for picking in self:
             # if shipping weight is not assigned => default to calculated product weight
-            packages_weight = picking.move_line_ids.result_package_id.sudo()._get_weight(picking.id)
-
             shipping_weight = picking.weight_bulk
             relevant_packages = picking.move_line_ids.result_package_id.outermost_package_id
-            children_packages_by_pack = relevant_packages._get_all_children_package_dest_ids()[0]
+            packages_weight = relevant_packages.sudo()._get_weight(picking.id)
             for package in relevant_packages:
                 if package.shipping_weight:
                     shipping_weight += package.shipping_weight
                 else:
-                    shipping_weight += package.package_type_id.base_weight
-                    shipping_weight += sum(packages_weight.get(pack, 0) for pack in self.env['stock.package'].browse(children_packages_by_pack.get(package)))
-
+                    shipping_weight += packages_weight.get(package, 0)
             picking.shipping_weight = shipping_weight
 
     def _compute_shipping_volume(self):
@@ -907,13 +913,14 @@ class StockPicking(models.Model):
                 volume += move.product_uom._compute_quantity(move.quantity, move.product_id.uom_id) * move.product_id.volume
             picking.shipping_volume = volume
 
-    @api.depends('move_ids.date_deadline', 'move_type')
+    @api.depends('move_ids.date_deadline', 'move_ids.state', 'move_type')
     def _compute_date_deadline(self):
         for picking in self:
+            moves = picking.move_ids.filtered(lambda m: m.state != 'cancel' and m.date_deadline)
             if picking.move_type == 'direct':
-                picking.date_deadline = min(picking.move_ids.filtered('date_deadline').mapped('date_deadline'), default=False)
+                picking.date_deadline = min(moves.mapped('date_deadline'), default=False)
             else:
-                picking.date_deadline = max(picking.move_ids.filtered('date_deadline').mapped('date_deadline'), default=False)
+                picking.date_deadline = max(moves.mapped('date_deadline'), default=False)
 
     def _set_scheduled_date(self):
         for picking in self:
@@ -982,6 +989,9 @@ class StockPicking(models.Model):
 
     @api.depends('picking_type_id', 'partner_id')
     def _compute_location_id(self):
+        ir_default_get = self.env['ir.default'].sudo()._get
+        default_customer_location_id = ir_default_get('res.partner', 'property_stock_customer')
+        default_supplier_location_id = ir_default_get('res.partner', 'property_stock_supplier')
         for picking in self:
             if picking.state in ('cancel', 'done') or picking.return_id:
                 continue
@@ -989,10 +999,14 @@ class StockPicking(models.Model):
             if picking.picking_type_id:
                 location_src = picking.picking_type_id.default_location_src_id
                 if location_src.usage == 'supplier' and picking.partner_id:
-                    location_src = picking.partner_id.property_stock_supplier
+                    supplier_location = picking.partner_id.property_stock_supplier
+                    if supplier_location and supplier_location.id != default_supplier_location_id:
+                        location_src = supplier_location
                 location_dest = picking.picking_type_id.default_location_dest_id
                 if location_dest.usage == 'customer' and picking.partner_id:
-                    location_dest = picking.partner_id.property_stock_customer
+                    customer_location = picking.partner_id.property_stock_customer
+                    if customer_location and customer_location.id != default_customer_location_id:
+                        location_dest = customer_location
                 picking.location_id = location_src.id
                 picking.location_dest_id = location_dest.id
 
@@ -1215,8 +1229,9 @@ class StockPicking(models.Model):
             'type': 'ir.actions.act_window',
             'res_model': 'stock.move.line',
             'views': [(view_id, 'list')],
-            'domain': [('id', 'in', self.move_line_ids.ids)],
+            'domain': [('picking_id', '=', self.id)],
             'context': {
+                'sml_specific_default': True,
                 'default_picking_id': self.id,
                 'default_location_id': self.location_id.id,
                 'default_location_dest_id': self.location_dest_id.id,
@@ -1269,8 +1284,22 @@ class StockPicking(models.Model):
         done_incoming_moves = self.filtered(lambda p: p.picking_type_id.code in ('incoming', 'internal')).move_ids.filtered(lambda m: m.state == 'done')
         done_incoming_moves._trigger_assign()
 
+        self._intercompany_unpack()
         self._send_confirmation_email()
         return True
+
+    def _intercompany_unpack(self):
+        if not self.env.user.has_group('stock.group_tracking_lot') or\
+           not self.env['ir.config_parameter'].sudo().get_param('stock.intercompany_auto_unpack'):
+            return
+        for picking in self:
+            if not picking.partner_id:
+                continue
+            destination_company = self.env['res.company'].sudo().search([('partner_id', 'parent_of', picking.partner_id.id)], limit=1)
+            if destination_company == picking.company_id:
+                continue
+            moves = picking.move_ids.filtered(lambda m: m.location_dest_id.usage == 'transit')
+            moves.move_line_ids.result_package_id.unpack()
 
     def _send_confirmation_email(self):
         subtype_id = self.env['ir.model.data']._xmlid_to_res_id('mail.mt_comment')
@@ -1299,10 +1328,12 @@ class StockPicking(models.Model):
 
     def _check_entire_pack(self):
         """ This function check if entire packs are moved in the picking"""
-        for package in self.move_line_ids.package_id:
-            pickings = self.move_line_ids.filtered(lambda ml: ml.package_id == package).picking_id
+        for package, package_move_lines in self.move_line_ids.grouped('package_id').items():
+            if not package:
+                continue
+            pickings = package_move_lines.picking_id
             if pickings._is_single_transfer() and pickings._check_move_lines_map_quant_package(package):
-                move_lines_to_pack = pickings.move_line_ids.filtered(lambda ml: ml.package_id == package and not ml.result_package_id and ml.state not in ('done', 'cancel'))
+                move_lines_to_pack = package_move_lines.filtered(lambda ml: not ml.result_package_id and ml.state not in ('done', 'cancel'))
                 if package.package_type_id.package_use != 'reusable':
                     move_lines_to_pack.write({
                         'result_package_id': package.id,
@@ -1486,6 +1517,11 @@ class StockPicking(models.Model):
         """Whether the different transfers should be displayed on the pre action done wizards."""
         return len(self) > 1
 
+    def _should_ignore_backorders(self):
+        """ Checks if the `create_backorder` setting from the picking type should be ignored.
+        """
+        return bool(self.return_id)
+
     def _get_without_quantities_error_message(self):
         """ Returns the error message raised in validation if no quantities are reserved.
         The purpose of this method is to be overridden in case we want to adapt this message.
@@ -1557,6 +1593,7 @@ class StockPicking(models.Model):
             'move_ids': [],
             'move_line_ids': [],
             'backorder_id': self.id,
+            'return_id': self.return_id.id,
         })
 
     def _create_backorder(self, backorder_moves=None):
@@ -1744,6 +1781,8 @@ class StockPicking(models.Model):
 
     def action_put_in_pack(self, *, package_id=False, package_type_id=False, package_name=False):
         self.ensure_one()
+        if self.env.context.get('sml_specific_default'):
+            self = self.with_context(clean_context(self.env.context))
         if self.state not in ('done', 'cancel'):
             return self.move_line_ids.action_put_in_pack(package_id=package_id, package_type_id=package_type_id, package_name=package_name)
 

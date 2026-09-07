@@ -322,9 +322,7 @@ class Field(typing.Generic[T]):
         return "%s.%s" % (self.model_name, self.name)
 
     def __repr__(self):
-        if not self.name:
-            return f"{'<%s.%s>'!r}" % (__name__, type(self).__name__)
-        return f"{'%s.%s'!r}" % (self.model_name, self.name)
+        return repr(str(self))
 
     def __init_subclass__(cls):
         super().__init_subclass__()
@@ -911,6 +909,9 @@ class Field(typing.Generic[T]):
     def _description_sortable(self, env: Environment):
         if self.column_type and self.store:  # shortcut
             return True
+        if self.inherited_field and self.inherited_field._description_sortable(env):
+            # avoid compuation for inherited field
+            return True
 
         model = env[self.model_name]
         query = model._as_query(ordered=False)
@@ -922,6 +923,9 @@ class Field(typing.Generic[T]):
 
     def _description_groupable(self, env: Environment):
         if self.column_type and self.store:  # shortcut
+            return True
+        if self.inherited_field and self.inherited_field._description_groupable(env):
+            # avoid compuation for inherited field
             return True
 
         model = env[self.model_name]
@@ -936,6 +940,9 @@ class Field(typing.Generic[T]):
     def _description_aggregator(self, env: Environment):
         if not self.aggregator or (self.column_type and self.store):  # shortcut
             return self.aggregator
+        if self.inherited_field and self.inherited_field._description_aggregator(env):
+            # avoid compuation for inherited field
+            return self.inherited_field.aggregator
 
         model = env[self.model_name]
         query = model._as_query(ordered=False)
@@ -1572,11 +1579,12 @@ class Field(typing.Generic[T]):
         either not in cache, or different from ``cache_value``.
         """
         field_cache = self._get_cache(records.env)
-        return records.browse(
+        ids_to_update = tuple(
             record_id
             for record_id in records._ids
             if field_cache.get(record_id, SENTINEL) != cache_value
         )
+        return records.__class__(records.env, ids_to_update, records._prefetch_ids)
 
     def _to_prefetch(self, record: ModelType) -> ModelType:
         """ Return a recordset including ``record`` to prefetch the field. """

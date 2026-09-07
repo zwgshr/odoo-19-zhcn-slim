@@ -355,6 +355,7 @@
             'website/static/tests/mock_server/**/*',
             'website/static/tests/redirect_field.test.js',
             'website/static/tests/new_content_systray_item.test.js',
+            'website/static/tests/page_url_field.test.js',
         ],
         'web.assets_unit_tests_setup': [
             'html_builder/static/src/utils/scrolling.js',
@@ -396,6 +397,7 @@
             'web/static/lib/bootstrap/scss/_variables-dark.scss',
             'web/static/lib/bootstrap/scss/_maps.scss',
             'website/static/src/scss/website.edit_mode.scss',
+            'website/static/src/components/googleplaces_autocomplete/*',
             'website/static/src/snippets/s_image_gallery/000.xml',
             'website/static/src/snippets/s_image_gallery/001.xml',
             'website/static/src/js/send_mail_form.js',
@@ -443,6 +445,7 @@
             ('include', 'html_builder.assets'),
             'website/static/src/scss/website_common.scss',
             'website/static/src/builder/**/*',
+            'website/static/src/components/googleplaces_autocomplete/*',
             ('remove', 'website/static/src/builder/**/*.edit.*'),
         ],
         'html_builder.iframe_add_dialog': [

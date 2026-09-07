@@ -4,7 +4,10 @@ from num2words import num2words
 
 from odoo import api, models
 from odoo.exceptions import UserError
-from odoo.tools import html2plaintext
+from odoo.tools import float_round, html2plaintext
+
+# InvoiceTypeCodes representing refunds in Nilvera documents.
+TR_REFUND_TYPE_CODES = {'IADE', 'TEVKIFATIADE'}
 
 
 class AccountEdiXmlUblTr(models.AbstractModel):
@@ -22,7 +25,7 @@ class AccountEdiXmlUblTr(models.AbstractModel):
 
     def _get_tax_category_code(self, customer, supplier, tax):
         # OVERRIDES account.edi.ubl_21
-        if tax.amount < 0:  # This is a withholding
+        if tax and tax.amount < 0:  # This is a withholding
             return '9015'
         return '0015'
 
@@ -94,13 +97,13 @@ class AccountEdiXmlUblTr(models.AbstractModel):
         ]
         if vals['invoice'].currency_id.name != 'TRY':
             document_node['cbc:Note'].append({'_text': self._l10n_tr_get_amount_integer_partn_text_note(invoice.amount_residual, vals['invoice'].currency_id), 'note_attrs': {}})
-            document_node['cbc:Note'].append({'_text': self._l10n_tr_get_invoice_currency_exchange_rate(invoice)})
+            document_node['cbc:Note'].append({'_text': f'KUR : {self._l10n_tr_get_currency_conversion_rate(invoice):.6f} TL'})
 
     @api.model
     def _l10n_tr_get_amount_integer_partn_text_note(self, amount, currency):
         sign = math.copysign(1.0, amount)
         amount_integer_part, amount_decimal_part = divmod(abs(amount), 1)
-        amount_decimal_part = int(amount_decimal_part * 100)
+        amount_decimal_part = round(amount_decimal_part * 100)
 
         text_i = num2words(amount_integer_part * sign, lang="tr") or 'Sifir'
         text_d = num2words(amount_decimal_part * sign, lang="tr") or 'Sifir'
@@ -115,15 +118,16 @@ class AccountEdiXmlUblTr(models.AbstractModel):
         else:
             document_node['cac:Delivery'] = None
 
-    def _l10n_tr_get_invoice_currency_exchange_rate(self, invoice):
-        conversion_rate = self.env['res.currency']._get_conversion_rate(
-            from_currency=invoice.currency_id,
-            to_currency=invoice.company_currency_id,
-            company=invoice.company_id,
-            date=invoice.invoice_date,
-        )
-        # Nilvera Portal accepts the exchange rate for 6 decimals places only.
-        return f'KUR : {conversion_rate:.6f} TL'
+    def _l10n_tr_get_currency_conversion_rate(self, invoice):
+        """Return the exchange rate: 1 [invoice currency] = X TRY, rounded to 6 decimals."""
+        company_currency_to_try_rate = self.env['res.currency']._get_conversion_rate(
+            invoice.company_id.currency_id,
+            self.env.ref('base.TRY'),
+            invoice.company_id,
+            invoice.invoice_date
+            )
+
+        return float_round(company_currency_to_try_rate / invoice.invoice_currency_rate, 6)
 
     def _add_invoice_payment_means_nodes(self, document_node, vals):
         # EXTENDS account.edi.xml.ubl_21
@@ -134,11 +138,12 @@ class AccountEdiXmlUblTr(models.AbstractModel):
 
     def _add_invoice_exchange_rate_nodes(self, document_node, vals):
         invoice = vals['invoice']
-        if vals['currency_id'] != vals['company_currency_id']:
+
+        if vals['currency_name'] != 'TRY':
             document_node['cac:PricingExchangeRate'] = {
                 'cbc:SourceCurrencyCode': {'_text': vals['currency_name']},
-                'cbc:TargetCurrencyCode': {'_text': vals['company_currency_id'].name},
-                'cbc:CalculationRate': {'_text': round(invoice.currency_id._get_conversion_rate(invoice.currency_id, invoice.company_id.currency_id, invoice.company_id, invoice.invoice_date), 6)},
+                'cbc:TargetCurrencyCode': {'_text': 'TRY'},
+                'cbc:CalculationRate': {'_text': self._l10n_tr_get_currency_conversion_rate(invoice)},
                 'cbc:Date': {'_text': invoice.invoice_date},
             }
 
@@ -168,7 +173,7 @@ class AccountEdiXmlUblTr(models.AbstractModel):
 
     def _get_address_node(self, vals):
         partner = vals['partner']
-        model = vals.get('model', 'res.partner')
+        model = partner._name
         country = partner['country' if model == 'res.bank' else 'country_id']
         state = partner['state' if model == 'res.bank' else 'state_id']
 
@@ -319,12 +324,44 @@ class AccountEdiXmlUblTr(models.AbstractModel):
         })
         return partner_vals
 
-    def _import_fill_invoice_form(self, invoice, tree, qty_factor):
+    def _get_import_document_amount_sign(self, tree):
         # EXTENDS account.edi.xml.ubl_20
-        logs = super()._import_fill_invoice_form(invoice, tree, qty_factor)
+        move_type, qty_factor = super()._get_import_document_amount_sign(tree)
+
+        invoice_type_code = tree.findtext('.//{*}InvoiceTypeCode')
+        if invoice_type_code in TR_REFUND_TYPE_CODES:
+            return 'refund', qty_factor
+
+        return move_type, qty_factor
+
+    def _l10n_tr_match_refund_reversed_entry(self, invoice, tree):
+        if invoice.move_type not in {'in_refund', 'out_refund'}:
+            return
+
+        order_reference = tree.findtext('./{*}OrderReference/{*}ID')
+        if not order_reference:
+            return
+
+        invoice_type = 'in_invoice' if invoice.move_type == 'in_refund' else 'out_invoice'
+
+        # If more than one move has the same ref, avoid guessing and let the user link it manually.
+        original_moves = self.env['account.move'].search([
+            ('ref', '=', order_reference),
+            ('company_id', '=', invoice.company_id.id),
+            ('move_type', '=', invoice_type),
+        ], limit=2)
+
+        if len(original_moves) == 1:
+            invoice.reversed_entry_id = original_moves.id
+
+    def _import_fill_invoice(self, invoice, tree, qty_factor):
+        # EXTENDS account.edi.xml.ubl_20
+        logs = super()._import_fill_invoice(invoice, tree, qty_factor)
 
         # ==== Nilvera UUID ====
         if uuid_node := tree.findtext('./{*}UUID'):
             invoice.l10n_tr_nilvera_uuid = uuid_node
+
+        self._l10n_tr_match_refund_reversed_entry(invoice, tree)
 
         return logs

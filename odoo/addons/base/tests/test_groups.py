@@ -547,6 +547,55 @@ class TestGroupsOdoo(common.TransactionCase):
         self.assertEqual(parse('base.group_user') <= parse('base.group_portal'), False)
         self.assertEqual(parse('!base.group_portal') <= parse('!base.group_public'), False)
 
+    def test_prevent_inherited_views_in_group_assignment(self):
+        """ Groups can only be assigned non-inherited (primary) views.
+
+        Inherited views (mode='extension') must not be linked to groups directly.
+        They inherit access from their parent view. Attempting to assign an
+        inherited view to a group should raise a ValidationError. """
+
+        View = self.env['ir.ui.view']
+        group = self.test_group
+        normal_view = View.create({
+            'name': 'Test Base View',
+            'type': 'form',
+            'model': 'res.partner',
+            'arch': '<form><field name="name"/></form>',
+        })
+        inherited_view = View.create({
+            'name': 'Inherited View',
+            'type': 'form',
+            'model': 'res.partner',
+            'inherit_id': normal_view.id,
+            'mode': 'extension',
+            'arch': '''
+                <xpath expr="//field[@name='name']" position="after">
+                    <field name="email"/>
+                </xpath>
+            ''',
+        })
+
+        # Case 1: inherited view should fail
+        with self.assertRaises(ValidationError):
+            group.write({
+                'view_access': [Command.link(inherited_view.id)],
+            })
+
+        # Case 2: normal view should pass
+        group.write({
+            'view_access': [Command.link(normal_view.id)],
+        })
+        self.assertIn(normal_view, group.view_access)
+
+        # Case 3: both views should fail
+        with self.assertRaises(ValidationError):
+            group.write({
+                'view_access': [
+                    Command.link(normal_view.id),
+                    Command.link(inherited_view.id)
+                ],
+            })
+
     def test_groups_2_from_commat_separator(self):
         parse = self.definitions.parse
 
@@ -709,3 +758,10 @@ class TestGroupsOdoo(common.TransactionCase):
 
         # this works because public user is inactive
         self.env.ref('base.group_public').implied_ids += self.test_group
+
+    def test_groups_7_multi_external_id(self):
+        system = self.env.ref('base.group_system')
+        self.env['ir.model.data']._update_xmlids([{'xml_id': 'base.test_group_system', 'record': system}])
+        self.assertGreater(len(system._get_external_ids()[system.id]), 1, "Group with multiple xmlids")
+        self.definitions = self.env['res.groups']._get_group_definitions()
+        self.assertEqual(self.parse_repr('base.group_system'), self.parse_repr('base.test_group_system'))

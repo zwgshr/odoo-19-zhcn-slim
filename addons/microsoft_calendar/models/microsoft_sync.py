@@ -72,16 +72,18 @@ class MicrosoftCalendarSync(models.AbstractModel):
         result = super().write(vals)
 
         if self.env.user._get_microsoft_sync_status() != "sync_paused":
+            timeout = self._get_microsoft_graph_timeout()
+
             for record in self:
                 if record.need_sync_m and record.microsoft_id:
                     if not vals.get('active', True):
                         # We need to delete the event. Cancel is not sufficient. Errors may occur.
-                        record._microsoft_delete(record._get_organizer(), record.microsoft_id, timeout=3)
+                        record._microsoft_delete(record._get_organizer(), record.microsoft_id, timeout=timeout)
                     elif fields_to_sync:
                         values = record._microsoft_values(fields_to_sync)
                         if not values:
                             continue
-                        record._microsoft_patch(record._get_organizer(), record.microsoft_id, values, timeout=3)
+                        record._microsoft_patch(record._get_organizer(), record.microsoft_id, values, timeout=timeout)
 
         return result
 
@@ -93,9 +95,11 @@ class MicrosoftCalendarSync(models.AbstractModel):
         records = super().create(vals_list)
 
         if self.env.user._get_microsoft_sync_status() != "sync_paused":
+            timeout = self._get_microsoft_graph_timeout()
+
             for record in records:
                 if record.need_sync_m and record.active:
-                    record._microsoft_insert(record._microsoft_values(self._get_microsoft_synced_fields()), timeout=3)
+                    record._microsoft_insert(record._microsoft_values(self._get_microsoft_synced_fields()), timeout=timeout)
         return records
 
     @api.model
@@ -195,6 +199,19 @@ class MicrosoftCalendarSync(models.AbstractModel):
             new_recurrence_odoo = self.env['calendar.recurrence'].with_context(dont_notify=True).create(new_calendar_recurrence)
             new_recurrence_odoo.base_event_id = new_recurrence_odoo.calendar_event_ids[0] if new_recurrence_odoo.calendar_event_ids else False
             new_recurrence |= new_recurrence_odoo
+
+        # Outlook can turn an existing single event into a recurring one in place:
+        # the seriesMaster then keeps the iCalUId of the former single event. Those
+        # single events are now represented by the recurrences, so remove them to
+        # avoid leaving duplicates next to the recurrences' first occurrences.
+        if new_recurrence:
+            duplicate_singles = self.env['calendar.event'].search([
+                ('ms_universal_event_id', 'in', new_recurrence.mapped('ms_universal_event_id')),
+                ('recurrence_id', '=', False),
+            ])
+            duplicate_singles.microsoft_id = False
+            duplicate_singles.ms_universal_event_id = False
+            duplicate_singles.with_context(dont_notify=True).unlink()
 
         # --- update events in existing recurrences ---
         # Important note:
@@ -452,6 +469,18 @@ class MicrosoftCalendarSync(models.AbstractModel):
         :return: dict of Odoo formatted values
         """
         raise NotImplementedError()
+
+    @api.model
+    def _get_microsoft_graph_timeout(self):
+        """Return Microsoft Graph request timeout (seconds).
+
+        Keep current behavior by default (5s), but allow admins to increase it
+        through a system parameter.
+        """
+        timeout = self.env['ir.config_parameter'].sudo().get_param('microsoft_calendar.graph_timeout')
+        if not timeout or not timeout.isdigit():
+            return 5
+        return max(1, int(timeout))
 
     def _microsoft_values(self, fields_to_sync, initial_values=()):
         """

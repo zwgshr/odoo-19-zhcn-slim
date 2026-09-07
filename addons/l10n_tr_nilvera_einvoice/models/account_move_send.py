@@ -21,6 +21,18 @@ class AccountMoveSend(models.AbstractModel):
         return res
 
     # -------------------------------------------------------------------------
+    # ATTACHMENTS
+    # -------------------------------------------------------------------------
+
+    def _get_invoice_extra_attachments(self, move):
+        # EXTENDS 'account'
+        # Add the Nilvera PDF to the mail attachments.
+        attachments = super()._get_invoice_extra_attachments(move)
+        if move.l10n_tr_nilvera_send_status == 'succeed' and move.message_main_attachment_id.id != move.invoice_pdf_report_id.id:
+            attachments += move.message_main_attachment_id
+        return attachments
+
+    # -------------------------------------------------------------------------
     # ALERTS
     # -------------------------------------------------------------------------
 
@@ -131,6 +143,16 @@ class AccountMoveSend(models.AbstractModel):
                 "message": _("Nilvera portal cannot process negative quantity nor negative price on invoice lines"),
                 "action_text": _("View Invoice(s)"),
                 "action": invalid_negative_lines._get_records_action(name=_("Check data on Invoice(s)")),
+            }
+
+        if lines_missing_taxes_moves := tr_nilvera_moves.filtered(
+            lambda move: move._l10n_tr_nilvera_einvoice_check_lines_missing_taxes(),
+        ):
+            alerts['tr_lines_missing_taxes'] = {
+                'level': 'danger',
+                'message': self.env._("Cannot send via Nilvera: One or more line items are missing a tax rate."),
+                'action_text': self.env._("View Invoice(s)"),
+                'action': lines_missing_taxes_moves._get_records_action(name=self.env._("Check taxes on Invoice(s)")),
             }
 
         if moves_with_invalid_name := tr_nilvera_moves.filtered(lambda move: not _is_valid_nilvera_name(move)):

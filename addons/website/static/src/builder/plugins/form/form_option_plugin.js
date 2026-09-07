@@ -118,9 +118,6 @@ export class FormOptionPlugin extends Plugin {
             ) {
                 reasons.push(_t("You cannot duplicate this field."));
             }
-            if (el.classList.contains("s_website_form_submit")) {
-                reasons.push(_t("You can't duplicate the submit button of the form."));
-            }
         },
         remove_disabled_reason_providers: ({ el, reasons }) => {
             if (el.classList.contains("s_website_form_model_required")) {
@@ -129,9 +126,6 @@ export class FormOptionPlugin extends Plugin {
                         "This field is mandatory for this action. You cannot remove it. Try hiding it with the 'Visibility' option instead and add it a default value."
                     )
                 );
-            }
-            if (el.classList.contains("s_website_form_submit")) {
-                reasons.push(_t("You can't remove the submit button of the form"));
             }
         },
         builder_options: [FormOption, FormFieldOptionRedraw, WebsiteFormSubmitOption],
@@ -162,7 +156,8 @@ export class FormOptionPlugin extends Plugin {
             SetVisibilityAction,
             SetVisibilityDependencyAction,
             SetFormCustomFieldValueListAction,
-            PropertyAction,
+            PropertyAction, // TODO: remove on master (unused)
+            PropertyAndAttributeValueAction,
             SetCustomErrorMessageAction,
             SetDefaultErrorMessageAction,
             SetRequirementComparatorAction,
@@ -191,8 +186,10 @@ export class FormOptionPlugin extends Plugin {
             },
         ],
         so_content_addition_selector: [".s_website_form"],
+        submit_button_selectors: [".s_website_form_send", ".s_website_form_submit"],
         on_snippet_dropped_handlers: this.onSnippetDropped.bind(this),
         on_cloned_handlers: this.onCloned.bind(this),
+        is_unremovable_selector: ".s_website_form_send, .s_website_form_submit",
     };
     setup() {
         this.modelsCache = new SyncCache(this._fetchModels.bind(this));
@@ -519,6 +516,7 @@ export class FormOptionPlugin extends Plugin {
         const activeField = getActiveField(oldFieldEl, { fields });
         if (activeField.type !== field.type) {
             field.value = "";
+            field.propertyValue = "";
         }
         const targetEl = oldFieldEl.querySelector(".s_website_form_input");
         if (targetEl) {
@@ -710,10 +708,10 @@ export class FormOptionPlugin extends Plugin {
             const type = getFieldType(fieldEl);
 
             const [optionText, checkType] = selectEl
-                ? [_t("Option"), "exclusive_boolean"]
+                ? [_t("Option List"), "exclusive_boolean"]
                 : type === "selection"
-                ? [_t("Radio"), "exclusive_boolean"]
-                : [_t("Checkbox"), "boolean"];
+                ? [_t("Radio Button List"), "exclusive_boolean"]
+                : [_t("Checkbox List"), "boolean"];
             const defaults = [...fieldEl.querySelectorAll("[checked], [selected]")].map((el) =>
                 isSmallInteger(el.value) ? parseInt(el.value) : el.value
             );
@@ -723,14 +721,15 @@ export class FormOptionPlugin extends Plugin {
                 availableRecords = JSON.stringify(field.records);
             }
             valueList = reactive({
-                title: _t("%s List", optionText),
-                addItemTitle: _t("Add"),
+                title: optionText,
+                addItemTitle: _t("Add New Option"),
                 checkType,
                 defaultItemName: _t("Item"),
                 hasDefault: ["one2many", "many2many"].includes(type) ? "multiple" : "unique",
                 defaults: JSON.stringify(defaults),
                 availableRecords: availableRecords,
                 newRecordId: isFieldCustom(fieldEl) ? getNewRecordId(fieldEl) : "",
+                isInputDisabled: !isFieldCustom(fieldEl),
             });
         }
         return {
@@ -990,6 +989,9 @@ export class AddActionFieldAction extends BuilderAction {
 export class PromptSaveRedirectAction extends BuilderAction {
     static id = "promptSaveRedirect";
     static dependencies = ["savePlugin"];
+    setup() {
+        this.canTimeout = false;
+    }
     apply({ params: { mainParam } }) {
         const redirectToAction = (action) => {
             redirect(`/odoo/action-${encodeURIComponent(action)}`);
@@ -1271,9 +1273,12 @@ export class ToggleDescriptionAction extends BuilderAction {
 }
 export class SelectTextareaValueAction extends BuilderAction {
     static id = "selectTextareaValue";
+    static dependencies = ["valueHistory"];
     apply({ editingElement: fieldEl, value }) {
+        // Set the property first, because changing the attribute silently
+        // sets the value (the first time), messing the history
+        this.dependencies.valueHistory.setValue(fieldEl, value);
         fieldEl.textContent = value;
-        fieldEl.value = value;
     }
     getValue({ editingElement: fieldEl }) {
         return fieldEl.textContent;
@@ -1426,10 +1431,31 @@ export class SetFormCustomFieldValueListAction extends BuilderAction {
     }
 }
 class PropertyAction extends BuilderAction {
+    // TODO: remove this class on master (unused)
     static id = "property";
 
     apply({ editingElement, params: { property, format } = {}, value }) {
         editingElement[property] = format ? format(value) : value;
+    }
+}
+export class PropertyAndAttributeValueAction extends BuilderAction {
+    static id = "propertyAndAttributeValue";
+    static dependencies = ["valueHistory"];
+
+    getValue({ editingElement }) {
+        return editingElement.getAttribute("value");
+    }
+    apply({ editingElement, params: { format } = {}, value }) {
+        // Set both the property and the attribute in this action (instead of
+        // using the `attributeAction` shortcut) to ensure the order between
+        // the two, because setting the `value` attribute changes the `value`
+        // property the first time (leading to bad history)
+        this.dependencies.valueHistory.setValue(editingElement, format ? format(value) : value);
+        if (value) {
+            editingElement.setAttribute("value", value);
+        } else {
+            editingElement.removeAttribute("value");
+        }
     }
 }
 class SetMultipleFilesAction extends BuilderAction {

@@ -165,14 +165,14 @@ class StockPackage(models.Model):
                     package.company_id = quants[0].company_id
             elif package.child_package_ids:
                 package.location_id = package.child_package_ids[0].location_id
-                if all(p.company_id == package.child_package_ids[0] for p in package.child_package_ids):
+                if all(p.company_id == package.child_package_ids[0].company_id for p in package.child_package_ids):
                     package.company_id = package.child_package_ids[0].company_id
 
     @api.depends('child_package_dest_ids')
     def _compute_picking_ids(self):
         children_by_dest_pack, all_pack_ids = self._get_all_children_package_dest_ids()
         groups = self.env['stock.move.line']._read_group(
-            domain=[('state', 'not in', ['done', 'cancel']), ('result_package_id', 'in', all_pack_ids)],
+            domain=[('state', 'not in', ['done', 'cancel']), ('result_package_id', 'in', all_pack_ids), ('picking_id', '!=', False)],
             groupby=['result_package_id'], aggregates=['picking_id:array_agg'])
         pickings_by_package = {package.id: picking_ids for package, picking_ids in groups}
 

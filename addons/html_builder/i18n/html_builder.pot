@@ -6,8 +6,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 19.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2025-11-07 18:36+0000\n"
-"PO-Revision-Date: 2025-11-07 18:36+0000\n"
+"POT-Creation-Date: 2026-07-24 17:39+0000\n"
+"PO-Revision-Date: 2026-07-24 17:39+0000\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "MIME-Version: 1.0\n"
@@ -49,6 +49,20 @@ msgstr ""
 
 #. module: html_builder
 #. odoo-javascript
+#: code:addons/html_builder/static/src/plugins/shape/shape_selector.xml:0
+msgid "A"
+msgstr ""
+
+#. module: html_builder
+#. odoo-javascript
+#: code:addons/html_builder/static/src/core/operation_plugin.js:0
+msgid ""
+"A technical issue occurred in the builder, you should save or discard your "
+"changes."
+msgstr ""
+
+#. module: html_builder
+#. odoo-javascript
 #: code:addons/html_builder/static/src/core/building_blocks/builder_list.js:0
 #: code:addons/html_builder/static/src/plugins/image/image_filter_option.xml:0
 msgid "Add"
@@ -56,7 +70,7 @@ msgstr ""
 
 #. module: html_builder
 #. odoo-javascript
-#: code:addons/html_builder/static/src/plugins/add_product_option.xml:0
+#: code:addons/html_builder/static/src/plugins/add_product_option.js:0
 msgid "Add Product"
 msgstr ""
 
@@ -1146,6 +1160,12 @@ msgstr ""
 
 #. module: html_builder
 #. odoo-javascript
+#: code:addons/html_builder/static/src/plugins/date_time_field_option.xml:0
+msgid "Date"
+msgstr ""
+
+#. module: html_builder
+#. odoo-javascript
 #: code:addons/html_builder/static/src/plugins/image/image_shapes_definition.js:0
 msgid "Decorative"
 msgstr ""
@@ -1656,6 +1676,14 @@ msgstr ""
 
 #. module: html_builder
 #. odoo-javascript
+#: code:addons/html_builder/static/src/core/version_error_plugin.js:0
+msgid ""
+"It might have caused problem during the editing. Please drag the new version"
+" from the snippet panel to update it."
+msgstr ""
+
+#. module: html_builder
+#. odoo-javascript
 #: code:addons/html_builder/static/src/core/building_blocks/builder_list.js:0
 msgid "Item"
 msgstr ""
@@ -1675,6 +1703,7 @@ msgstr ""
 #. module: html_builder
 #. odoo-javascript
 #: code:addons/html_builder/static/src/plugins/rating_option.xml:0
+#: code:addons/html_builder/static/src/plugins/size_option.xml:0
 msgid "Large"
 msgstr ""
 
@@ -1777,6 +1806,7 @@ msgstr ""
 #. module: html_builder
 #. odoo-javascript
 #: code:addons/html_builder/static/src/plugins/rating_option.xml:0
+#: code:addons/html_builder/static/src/plugins/size_option.xml:0
 msgid "Medium"
 msgstr ""
 
@@ -2187,6 +2217,12 @@ msgstr ""
 
 #. module: html_builder
 #. odoo-javascript
+#: code:addons/html_builder/static/src/plugins/background_option/background_image.xml:0
+msgid "Remove image"
+msgstr ""
+
+#. module: html_builder
+#. odoo-javascript
 #: code:addons/html_builder/static/src/sidebar/option_container.xml:0
 msgid "Remove this block"
 msgstr ""
@@ -2258,6 +2294,12 @@ msgstr ""
 #. odoo-javascript
 #: code:addons/html_builder/static/src/plugins/image/image_tool_option.xml:0
 msgid "Reset crop"
+msgstr ""
+
+#. module: html_builder
+#. odoo-javascript
+#: code:addons/html_builder/static/src/plugins/image/image_shape_option.xml:0
+msgid "Reset shape transformation"
 msgstr ""
 
 #. module: html_builder
@@ -2465,6 +2507,7 @@ msgstr ""
 #: code:addons/html_builder/static/src/plugins/image/image_size.xml:0
 #: code:addons/html_builder/static/src/plugins/image/image_tool_option.xml:0
 #: code:addons/html_builder/static/src/plugins/rating_option.xml:0
+#: code:addons/html_builder/static/src/plugins/size_option.xml:0
 msgid "Size"
 msgstr ""
 
@@ -2478,6 +2521,7 @@ msgstr ""
 #. odoo-javascript
 #: code:addons/html_builder/static/src/plugins/font/font_plugin.js:0
 #: code:addons/html_builder/static/src/plugins/rating_option.xml:0
+#: code:addons/html_builder/static/src/plugins/size_option.xml:0
 msgid "Small"
 msgstr ""
 
@@ -2768,6 +2812,12 @@ msgstr ""
 #. odoo-javascript
 #: code:addons/html_builder/static/src/core/building_blocks/builder_fontfamilypicker.xml:0
 msgid "This font is hosted and served to your visitors by Google servers"
+msgstr ""
+
+#. module: html_builder
+#. odoo-javascript
+#: code:addons/html_builder/static/src/core/version_error_plugin.js:0
+msgid "This snippet is outdated"
 msgstr ""
 
 #. module: html_builder

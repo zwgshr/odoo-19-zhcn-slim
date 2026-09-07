@@ -131,7 +131,7 @@ class L10nInEwaybill(models.Model):
         ("error", "Error")],
         string="Blocking Level", readonly=True)
 
-    content = fields.Binary(compute='_compute_content', compute_sudo=True)
+    content = fields.Binary(compute='_compute_content')
     cancel_reason = fields.Selection(selection=[
         ("1", "Duplicate"),
         ("2", "Data Entry Mistake"),
@@ -326,6 +326,7 @@ class L10nInEwaybill(models.Model):
             self._check_gst_treatment,
             self._check_transporter,
             self._check_state,
+            self._check_pincode,
         ]
         for get_error_message in methods_to_check:
             error_message.extend(get_error_message())
@@ -355,6 +356,14 @@ class L10nInEwaybill(models.Model):
             error_message.append(_(
                 "An E-waybill cannot be generated for a %s move.",
                 dict(self.env['account.move']._fields['state']._description_selection(self.env))[self.account_move_id.state]
+            ))
+        return error_message
+
+    def _check_pincode(self):
+        error_message = []
+        if self.partner_ship_from_id.zip == self.partner_ship_to_id.zip and not self.distance:
+            error_message.append(self.env._(
+                "Set a valid distance when the dispatch and delivery pincodes are the same.",
             ))
         return error_message
 
@@ -465,30 +474,42 @@ class L10nInEwaybill(models.Model):
         self._write_error(error_message, blocking_level)
 
     def _create_and_post_response_attachment(self, ewb_name, response, is_cancel=False):
-        if not is_cancel:
-            name = f'ewaybill_{ewb_name}.json'
-        else:
-            name = f'ewaybill_{ewb_name}_cancel.json'
-        attachment = self.env['ir.attachment'].create({
-            'name': name,
-            'mimetype': 'application/json',
-            'raw': json.dumps(response),
-            'res_model': self._name,
-            'res_id': self.id,
-            'res_field': 'attachment_file',
-            'company_id': self.company_id.id
-        })
+        def _create_attachment_vals(name, raw_data, res_field=False):
+            vals = {
+                'name': name,
+                'mimetype': 'application/json',
+                'raw': json.dumps(raw_data, indent=4),
+                'res_model': self._name,
+                'res_id': self.id,
+                'res_field': res_field,
+                'company_id': self.company_id.id,
+            }
+            return vals
+
+        attachment_vals_list = []
+        request_json = self._get_cancellation_request_vals() if is_cancel else self._ewaybill_generate_direct_json()
+        request_type = 'cancel_request' if is_cancel else 'request'
+        request_name = f'ewaybill_{ewb_name}_{request_type}.json'
+        attachment_vals_list.append(_create_attachment_vals(request_name, request_json))
+        name = f'ewaybill_{ewb_name}_cancel.json' if is_cancel else f'ewaybill_{ewb_name}.json'
+        attachment_vals_list.append(_create_attachment_vals(name, response, res_field='attachment_file'))
+        attachments = self.env['ir.attachment'].create(attachment_vals_list)
         self.message_post(
             author_id=self.env.ref('base.partner_root').id,
-            attachment_ids=attachment.ids
+            attachment_ids=attachments.ids,
+            body=self.env._("E-waybill has been successfully %s.", 'cancelled' if is_cancel else 'sent')
         )
 
-    def _ewaybill_cancel(self):
-        cancel_json = {
+    def _get_cancellation_request_vals(self):
+        cancel_json_vals = {
             'ewbNo': int(self.name),
             'cancelRsnCode': int(self.cancel_reason),
             'cancelRmrk': self.cancel_remarks,
         }
+        return cancel_json_vals
+
+    def _ewaybill_cancel(self):
+        cancel_json = self._get_cancellation_request_vals()
         ewb_api = EWayBillApi(self.company_id)
         if self.error_message and self.blocking_level == 'error':
             self.message_post(body=_(
@@ -561,8 +582,11 @@ class L10nInEwaybill(models.Model):
         return False
 
     @api.model
-    def _get_partner_state_code(self, partner):
-        return int(partner.state_id.l10n_in_tin) if partner.country_id.code == "IN" else 99
+    def _get_partner_state_code(self, partner, is_to_state=False):
+        is_sez = (self.account_move_id or partner).l10n_in_gst_treatment == "special_economic_zone"
+        if partner.country_id.code != "IN" or (is_to_state and is_sez):
+            return 99
+        return int(partner.state_id.l10n_in_tin)
 
     def _get_l10n_in_ewaybill_line_details(self, line, tax_details):
         sign = self.account_move_id.is_inbound() and -1 or 1
@@ -610,7 +634,7 @@ class L10nInEwaybill(models.Model):
 
         def prepare_details(key_paired_function, partner_detail):
             return {
-                f"{place}{key}": fun(partner)
+                f"{place}{key}": fun(partner, place) if key == "StateCode" else fun(partner)
                 for key, fun in key_paired_function
                 for place, partner in partner_detail
             }
@@ -627,13 +651,13 @@ class L10nInEwaybill(models.Model):
                 ),
                 "transDistance": str(self.distance),
                 "docNo": self.document_number,
-                "docDate": (self.document_date or fields.Datetime.now()).strftime("%d/%m/%Y"),
+                "docDate": fields.Date.context_today(self.with_context(tz='Asia/Kolkata'), self.document_date).strftime("%d/%m/%Y"),
                 # bill details
                 **prepare_details(
                     key_paired_function={
                         'Gstin': lambda p: p.commercial_partner_id.vat or "URP",
                         'TrdName': lambda p: p.commercial_partner_id.name,
-                        'StateCode': self._get_partner_state_code,
+                        'StateCode': lambda p, place: self._get_partner_state_code(p, is_to_state=place == 'to'),
                     }.items(),
                     partner_detail={'from': self.partner_bill_from_id, 'to': self.partner_bill_to_id}.items()
                 ),
@@ -643,13 +667,18 @@ class L10nInEwaybill(models.Model):
                         "Addr1": lambda p: p.street and p.street[:120] or "",
                         "Addr2": lambda p: p.street2 and p.street2[:120] or "",
                         "Place": lambda p: p.city and p.city[:50] or "",
-                        "Pincode": lambda p: int(p.zip) if p.country_id.code == "IN" else 999999,
+                        "Pincode": lambda p: p.zip and int(p.zip) if p.country_id.code == "IN" else 999999,
                     }.items(),
                     partner_detail={'from': self.partner_ship_from_id, 'to': self.partner_ship_to_id}.items()
                 ),
-                "actToStateCode": self._get_partner_state_code(self.partner_ship_to_id),
-                "actFromStateCode": self._get_partner_state_code(self.partner_ship_from_id),
+                "actToStateCode": self.partner_ship_to_id.country_id.code != "IN" and 97 or self._get_partner_state_code(self.partner_ship_to_id),
+                "actFromStateCode": self.partner_ship_from_id.country_id.code != "IN" and 97 or self._get_partner_state_code(self.partner_ship_from_id),
         }
+        match self.type_id.sub_type:
+            case "Export":
+                ewaybill_json['toGstin'] = "URP"
+            case "Import":
+                ewaybill_json['fromGstin'] = "URP"
         return ewaybill_json
 
     def _prepare_ewaybill_transportation_json_payload(self):
@@ -673,6 +702,15 @@ class L10nInEwaybill(models.Model):
         invoice_line_tax_details = tax_details.get("tax_details_per_record")
         sign = self.account_move_id.is_inbound() and -1 or 1
         rounding_amount = sum(line.balance for line in self.account_move_id.line_ids if line.display_type == 'rounding') * sign
+        total_invoice_value = tax_details.get("base_amount", 0.00) + tax_details.get("tax_amount", 0.00) + rounding_amount
+        if self.account_move_id.l10n_in_gst_treatment == 'overseas' and self.partner_ship_to_id.country_id.code != 'IN':
+            # For exports without LUT, the e-waybill total invoice value must include Reverse Charges.
+            # Reverse charge amounts are stored as a negative value,
+            # so we subtract it here to effectively add it to the total. (i.e. -(-x) = +x).
+            adjusting_rc_amount = sum(
+                tax_details_by_code.get(code, 0.00) for code in ("cgst_rc_amount", "sgst_rc_amount", "igst_rc_amount")
+            )
+            total_invoice_value -= adjusting_rc_amount
         return {
             "itemList": list(starmap(self._get_l10n_in_ewaybill_line_details, invoice_line_tax_details.items())),
             "totalValue": round_value(tax_details.get("base_amount", 0.00)),
@@ -682,7 +720,7 @@ class L10nInEwaybill(models.Model):
             },
             "cessNonAdvolValue": round_value(tax_details_by_code.get("cess_non_advol_amount", 0.00)),
             "otherValue": round_value(tax_details_by_code.get("other_amount", 0.00) + rounding_amount),
-            "totInvValue": round_value(tax_details.get("base_amount", 0.00) + tax_details.get("tax_amount", 0.00) + rounding_amount),
+            "totInvValue": round_value(total_invoice_value),
         }
 
     def _ewaybill_generate_direct_json(self):
