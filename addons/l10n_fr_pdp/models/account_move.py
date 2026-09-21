@@ -587,7 +587,12 @@ class AccountMove(models.Model):
                 if not move.name or not G1_05_RE.match(move.name):
                     yield self.env._("Move name is not valid%s.", ref_move)
                 for tax in move.invoice_line_ids.tax_ids.flatten_taxes_hierarchy():
-                    if tax.amount not in VALID_PDP_TAX_RATES:
+                    is_valid_oss_rate = (
+                        tax._l10n_fr_pdp_is_oss()
+                        and tax.amount_type == 'percent'
+                        and 0 <= tax.amount <= 100
+                    )
+                    if not is_valid_oss_rate and tax.amount not in VALID_PDP_TAX_RATES:
                         yield self.env._(
                             "Tax %(tax)s is not supported by French e-reporting%(ref_move)s.",
                             tax=tax.display_name,
@@ -701,3 +706,11 @@ class AccountMove(models.Model):
                 # Ensure RE flow exist for current move period.
                 self.env['l10n.fr.pdp.reports.flow']._get_open_flow_and_create_if_needed(move)
         return super().button_draft()
+
+    def _get_import_file_type(self, file_data):
+        """ Identify UBL files. """
+        # EXTENDS 'account'
+        if (tree := file_data['xml_tree']) is not None:
+            if tree.findtext('{*}CustomizationID') == 'urn:cen.eu:en16931:2017#conformant#urn.cpro.gouv.fr:1p0:extended-ctc-fr':
+                return 'account.edi.xml.ubl_21_fr'
+        return super()._get_import_file_type(file_data)
